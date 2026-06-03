@@ -194,6 +194,7 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
         const embed = new EmbedBuilder();
 
         if (isLive) {
+            // Live Channel Setup
             embed.setTitle('Update Detected!')
                  .setColor(0x00FF00)
                  .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)\n**Wooster Games, Animal Company**`)
@@ -203,19 +204,19 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
                  );
             if (assets?.banner) embed.setImage(assets.banner);
         } else {
-            embed.setTitle('🛠️ Developer Builds Update Detected!')
+            // Developer Build Channel Setup - Matches reference mockups perfectly
+            embed.setTitle('New Developer Build!')
                  .setColor(0x2B2D31)
-                 .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
+                 .setDescription('**Animal Company**')
                  .addFields(
-                     { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
-                     { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: true }
-                 );
-            if (assets?.banner) embed.setThumbnail(assets.banner);
+                     { name: '\u200B', value: `\`\`\`${current}\`\`\``, inline: false }
+                 )
+                 .setFooter({ text: 'This is a developer only release' });
+            
+            if (assets?.icon) embed.setThumbnail(assets.icon);
         }
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
-        
-        // Removed text log lines entirely. It now sends clean embeds directly.
         const alertContent = isLive ? `<@&${UPDATE_ROLE_ID}>` : null;
 
         await channel.send({ 
@@ -338,7 +339,7 @@ client.on('interactionCreate', async interaction => {
         log(`Dispatched forced /test layout render for user profile ${user.tag}`, 'orange');
         
         await sendMetaUpdateEmbed(saved.live || '1.76.1.3001', '1.75.0.2900', 'Live', assets);
-        await sendMetaUpdateEmbed(saved.dev || '1.77.2.3100', '1.76.1.3001', 'Developer Builds', assets);
+        await sendMetaUpdateEmbed(saved.dev || '1.76.1.3001', '1.76.1.3001', 'Developer Builds', assets);
         
         await interaction.editReply('✅ Double-mock branch test dispatches generated completely into channel directories.');
     }
