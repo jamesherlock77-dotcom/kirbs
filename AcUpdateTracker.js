@@ -59,22 +59,18 @@ client.commands = new Collection();
 // --- Meta Quest Store Asset Scraper ---
 async function fetchStoreAssets() {
     try {
-        // Fetch public store page to extract image assets directly from the application meta tags
         const response = await axios.get(`https://www.meta.com/experiences/${APP_ID}/`, {
             headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
             timeout: 10000
         });
         const html = response.data;
 
-        // Pull OpenGraph images (the wide landscape banner)
         const ogImageMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
         let banner = ogImageMatch ? ogImageMatch[1].replace(/&amp;/g, '&') : null;
 
-        // Pull application icon image
         const twitterImageMatch = html.match(/<meta\s+name=["']twitter:image["']\s+content=["']([^"']+)["']/i);
         let icon = twitterImageMatch ? twitterImageMatch[1].replace(/&amp;/g, '&') : null;
 
-        // Fallbacks if one tag fails
         if (!icon && banner) icon = banner;
         if (!banner && icon) banner = icon;
 
@@ -105,15 +101,12 @@ async function fetchMetaGameData() {
         const data = response.data;
         const node = data?.data?.node;
         
-        // Extract Live Version
         const liveNodes = node?.liveChannel?.nodes || [];
         const liveVersion = liveNodes[0]?.latest_supported_binary?.version || null;
 
-        // Extract Dev Version
         const devNodes = node?.primary_binaries?.nodes || [];
         const devVersion = devNodes[0]?.version || null;
 
-        // Fetch Assets dynamically from store engine
         const assets = await fetchStoreAssets();
 
         log(`API Fetch -> Live: ${liveVersion} | Dev: ${devVersion}`, 'green');
@@ -169,16 +162,15 @@ async function notifyLinkedUsers(current, previous, branchName, assets) {
 
     const now = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
-        .setTitle(`🌍 Meta Update Detected!`)
+        .setTitle(`Update Detected!`)
         .setColor(0x00FF00) 
-        .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
+        .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)\n**Wooster Games, Animal Company**`)
         .addFields(
-            { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
-            { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: true }
+            { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: false },
+            { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: false }
         );
 
     if (assets?.banner) embed.setImage(assets.banner);
-    if (assets?.icon) embed.setThumbnail(assets.icon);
 
     const dmContent = `\n\n\n**Message from <@${client.user.id}>**\n\nAn update has been detected on the public release branch for Animal Company!\n\n🟢 **New Version:** ${current}\n🔴 **Last Version:** ${previous || 'Unknown'}\n\nTo stop receiving these notifications you can do **/unlink** in the same server you linked from\n\n-# coolio`;
 
@@ -199,20 +191,29 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
         const now = Math.floor(Date.now() / 1000);
         const isLive = branchName === 'Live';
         
-        const embedColor = isLive ? 0x00FF00 : 0x2B2D31; 
-        const titleText = isLive ? '🌍 Meta Update Detected!' : '🛠️ Developer Builds Update Detected!';
+        const embed = new EmbedBuilder();
 
-        const embed = new EmbedBuilder()
-            .setTitle(titleText)
-            .setColor(embedColor)
-            .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
-            .addFields(
-                { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
-                { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: true }
-            );
-
-        if (assets?.banner) embed.setImage(assets.banner);
-        if (assets?.icon) embed.setThumbnail(assets.icon);
+        if (isLive) {
+            // Live Channel Setup - Matches public visual layout exactly
+            embed.setTitle('Update Detected!')
+                 .setColor(0x00FF00)
+                 .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)\n**Wooster Games, Animal Company**`)
+                 .addFields(
+                     { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: false },
+                     { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: false }
+                 );
+            if (assets?.banner) embed.setImage(assets.banner);
+        } else {
+            // Developer Build Channel Setup - Banner isolated only inside the top right thumbnail slot
+            embed.setTitle('🛠️ Developer Builds Update Detected!')
+                 .setColor(0x2B2D31)
+                 .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
+                 .addFields(
+                     { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
+                     { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: true }
+                 );
+            if (assets?.banner) embed.setThumbnail(assets.banner);
+        }
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         
@@ -242,7 +243,7 @@ async function sendStartupEmbed(live, dev, assets) {
                 { name: '🛠️ Developer Version', value: `\`\`\`${dev || "Unknown"}\`\`\``, inline: true }
             );
 
-        if (assets?.icon) embed.setThumbnail(assets.icon);
+        if (assets?.banner) embed.setThumbnail(assets.banner);
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         await channel.send({ embeds: [embed] });
@@ -260,14 +261,12 @@ async function runTrackerLoop() {
             let updated = false;
             const assets = { icon: current.icon, banner: current.banner };
 
-            // Check Live Branch Change
             if (current.live && current.live !== saved.live) {
                 await sendMetaUpdateEmbed(current.live, saved.live, 'Live', assets);
                 saved.live = current.live;
                 updated = true;
             }
 
-            // Check Dev Branch Change
             if (current.dev && current.dev !== saved.dev) {
                 await sendMetaUpdateEmbed(current.dev, saved.dev, 'Developer Builds', assets);
                 saved.dev = current.dev;
@@ -326,7 +325,6 @@ client.on('interactionCreate', async interaction => {
         return;
     }
 
-    // Admin Security Checking 
     if (!OWNER_USER_IDS.includes(user.id)) {
         return interaction.reply({ content: 'Action prohibited. Unauthorized operator credentials.', flags: [MessageFlags.Ephemeral] });
     }
@@ -432,7 +430,6 @@ client.once('clientReady', async () => {
         log('Dynamic application command schemas injected successfully.', 'green');
     } catch (err) { log('Command loading exception error rules: ' + err.message, 'red'); }
 
-    // First API Pull Setup
     const current = await fetchMetaGameData();
     const saved = getSavedVersions();
     
