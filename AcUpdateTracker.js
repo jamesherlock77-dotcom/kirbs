@@ -2,7 +2,6 @@ const { Client, GatewayIntentBits, EmbedBuilder, ActivityType, Collection, REST,
 const axios = require('axios');
 const fs = require('fs');
 const chalk = require('chalk');
-const path = require('path');
 
 // --- Configuration (Safe Cloud Variables) ---
 const TOKEN = process.env.DISCORD_TOKEN || '';
@@ -14,7 +13,6 @@ const OWNER_USER_IDS = (process.env.OWNER_USER_IDS || '1012186051105804289').spl
 const UPDATE_ROLE_ID = process.env.UPDATE_ROLE_ID || '1463264519953580218'; 
 
 const BOT_NAME = 'tack';
-const BANNER_FILE = path.join(__dirname, 'banner.png');
 
 // Meta Oculus GraphQL API Constants
 const GRAPHQL_URL = 'https://graph.oculus.com/graphql';
@@ -73,17 +71,22 @@ async function fetchMetaGameData() {
         });
 
         const data = response.data;
+        const node = data?.data?.node;
         
         // Extract Live Version
-        const liveNodes = data?.data?.node?.liveChannel?.nodes || [];
+        const liveNodes = node?.liveChannel?.nodes || [];
         const liveVersion = liveNodes[0]?.latest_supported_binary?.version || null;
 
         // Extract Dev Version
-        const devNodes = data?.data?.node?.primary_binaries?.nodes || [];
+        const devNodes = node?.primary_binaries?.nodes || [];
         const devVersion = devNodes[0]?.version || null;
 
-        log(`API Fetch Successful -> Live: ${liveVersion} | Dev: ${devVersion}`, 'green');
-        return { live: liveVersion, dev: devVersion };
+        // Fetch Live Store Assets dynamically
+        const gameIcon = node?.icon_image?.uri || null;
+        const gameBanner = node?.hero_16_9_image?.uri || node?.main_image?.uri || null;
+
+        log(`API Fetch -> Live: ${liveVersion} | Dev: ${devVersion}`, 'green');
+        return { live: liveVersion, dev: devVersion, icon: gameIcon, banner: gameBanner };
     } catch (err) {
         log(`Error calling Oculus GraphQL API: ${err.message}`, 'red');
         return null;
@@ -129,20 +132,22 @@ async function removeLinkedUser(userId) {
 }
 
 // --- Notification Dispatches ---
-async function notifyLinkedUsers(current, previous, branchName) {
+async function notifyLinkedUsers(current, previous, branchName, assets) {
     const users = getLinkedUsers();
     if (!users.length) return;
 
     const now = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
         .setTitle(`Animal Company\n${branchName} Update Detected!`)
-        .setColor(branchName === 'Live' ? 0x00FF00 : 0xFF00FF)
+        .setColor(0x00FF00) // Public updates get Green
         .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
         .addFields(
             { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
             { name: '🔴 | Last Logged:', value: previous || 'Unknown', inline: true }
-        )
-        .setImage('attachment://banner.png');
+        );
+
+    if (assets?.banner) embed.setImage(assets.banner);
+    if (assets?.icon) embed.setThumbnail(assets.icon);
 
     const dmMessage = `Hey there <@USER_ID> 👋\n\nAn update has been detected on the **${branchName}** branch for Animal Company!\n\n🟢 New Version: ${current}\n🔴 Last Version: ${previous || 'Unknown'}\n\nUse \`/unlink\` to turn off notifications.`;
 
@@ -152,45 +157,63 @@ async function notifyLinkedUsers(current, previous, branchName) {
             if (!user) continue;
             await user.send({
                 content: dmMessage.replace('<@USER_ID>', `<@${userId}>`),
-                embeds: [embed],
-                files: [BANNER_FILE]
+                embeds: [embed]
             });
         } catch (err) { log(`Failed to DM ${userId}: ${err.message}`, 'red'); }
     }
 }
 
-async function sendMetaUpdateEmbed(current, previous, branchName) {
+async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
     try {
         const now = Math.floor(Date.now() / 1000);
+        
+        const isLive = branchName === 'Live';
+        const embedColor = isLive ? 0x00FF00 : 0x2B2D31; // Green for public Live, Off-Black/Stealth for Developer
+        const titlePrefix = isLive ? '🌍 Meta' : '🛠️ Developer Builds';
+
         const embed = new EmbedBuilder()
-            .setTitle(`Animal Company\n${branchName} Update Detected!`)
-            .setColor(branchName === 'Live' ? 0x00FF00 : 0xFF00FF)
+            .setTitle(`${titlePrefix}\nUpdate Detected!`)
+            .setColor(embedColor)
             .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
             .addFields(
                 { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
                 { name: '🔴 | Last Logged:', value: previous || 'Unknown', inline: true }
-            )
-            .setImage('attachment://banner.png');
+            );
+
+        if (assets?.banner) embed.setImage(assets.banner);
+        if (assets?.icon) embed.setThumbnail(assets.icon);
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
-        await channel.send({ content: `<@&${UPDATE_ROLE_ID}> **[${branchName} Branch Update Alert]**`, embeds: [embed], files: [BANNER_FILE] });
+        
+        // PING LOGIC: Only perform pings on the Live channel updates
+        const alertContent = isLive 
+            ? `<@&${UPDATE_ROLE_ID}> **[${branchName} Branch Update Alert]**` 
+            : `**[Silent Log] New build detected on Developer Branch.**`;
 
-        await notifyLinkedUsers(current, previous, branchName);
-        log(`Broadcasted ${branchName} update to channels and users.`, 'blue');
+        await channel.send({ content: alertContent, embeds: [embed] });
+
+        // Only DM subscribers for public Live updates
+        if (isLive) {
+            await notifyLinkedUsers(current, previous, branchName, assets);
+        }
+        
+        log(`Broadcasted ${branchName} update to channels.`, 'blue');
     } catch (err) { log('Error sending update embed: ' + err.message, 'red'); }
 }
 
-async function sendStartupEmbed(live, dev) {
+async function sendStartupEmbed(live, dev, assets) {
     try {
         const now = Math.floor(Date.now() / 1000);
         const embed = new EmbedBuilder()
-            .setTitle('Tracker System Online (GraphQL API Mode)')
+            .setTitle('Tracker System Online (GraphQL Live Assets)')
             .setColor(0x800080)
             .setDescription(`⏳ Status initialized <t:${now}:R>`)
             .addFields(
                 { name: '🌍 Live Store Version', value: `\`\`\`${live || "Unknown"}\`\`\``, inline: true },
                 { name: '🛠️ Developer Version', value: `\`\`\`${dev || "Unknown"}\`\`\``, inline: true }
             );
+
+        if (assets?.icon) embed.setThumbnail(assets.icon);
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         await channel.send({ embeds: [embed] });
@@ -206,17 +229,18 @@ async function runTrackerLoop() {
 
         if (current) {
             let updated = false;
+            const assets = { icon: current.icon, banner: current.banner };
 
             // Check Live Branch Change
             if (current.live && current.live !== saved.live) {
-                await sendMetaUpdateEmbed(current.live, saved.live, 'Live');
+                await sendMetaUpdateEmbed(current.live, saved.live, 'Live', assets);
                 saved.live = current.live;
                 updated = true;
             }
 
             // Check Dev Branch Change
             if (current.dev && current.dev !== saved.dev) {
-                await sendMetaUpdateEmbed(current.dev, saved.dev, 'Developer Builds');
+                await sendMetaUpdateEmbed(current.dev, saved.dev, 'Developer Builds', assets);
                 saved.dev = current.dev;
                 updated = true;
             }
@@ -255,7 +279,7 @@ client.on('interactionCreate', async interaction => {
         }
         const added = await addLinkedUser(user.id);
         if (added) {
-            await interaction.reply({ content: 'Linked successfully! Check your direct messages.', flags: [MessageFlags.Ephemeral] });
+            await interaction.reply({ content: 'Linked successfully! Check your DMs.', flags: [MessageFlags.Ephemeral] });
             try { await user.send(`Hey <@${user.id}>! You've successfully locked in subscription alerts for Animal Company.`); } catch {}
         } else {
             await interaction.reply({ content: 'Account already configured into database tracking lists.', flags: [MessageFlags.Ephemeral] });
@@ -281,10 +305,13 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'test') {
         await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
         const saved = getSavedVersions();
+        const current = await fetchMetaGameData();
+        const assets = { icon: current?.icon, banner: current?.banner };
+
         log(`Dispatched forced /test layout render for user profile ${user.tag}`, 'orange');
         
-        await sendMetaUpdateEmbed(saved.live || '1.58.1-LIVE-MOCK', '1.58.0-OLD-MOCK', 'Live (Forced Test)');
-        await sendMetaUpdateEmbed(saved.dev || '1.60.2-DEV-MOCK', '1.59.1-OLD-MOCK', 'Developer Builds (Forced Test)');
+        await sendMetaUpdateEmbed(saved.live || '1.58.1-LIVE-MOCK', '1.58.0-OLD-MOCK', 'Live', assets);
+        await sendMetaUpdateEmbed(saved.dev || '1.60.2-DEV-MOCK', '1.59.1-OLD-MOCK', 'Developer Builds', assets);
         
         await interaction.editReply('✅ Double-mock branch test dispatches generated completely into channel directories.');
     }
@@ -298,18 +325,19 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply('❌ API lookup operation terminated with standard communication errors.');
         }
 
+        const assets = { icon: current.icon, banner: current.banner };
         let response = `**__Direct Manual API Audit Check Results:__**\n`;
         response += `🌍 **Live Branch:** Saved: \`${saved.live || 'None'}\` ➜ Direct API: \`${current.live || 'Error'}\`\n`;
         response += `🛠️ **Dev Branch:** Saved: \`${saved.dev || 'None'}\` ➜ Direct API: \`${current.dev || 'Error'}\`\n\n`;
 
         let updated = false;
         if (current.live && current.live !== saved.live) {
-            await sendMetaUpdateEmbed(current.live, saved.live, 'Live');
+            await sendMetaUpdateEmbed(current.live, saved.live, 'Live', assets);
             saved.live = current.live;
             updated = true;
         }
         if (current.dev && current.dev !== saved.dev) {
-            await sendMetaUpdateEmbed(current.dev, saved.dev, 'Developer Builds');
+            await sendMetaUpdateEmbed(current.dev, saved.dev, 'Developer Builds', assets);
             saved.dev = current.dev;
             updated = true;
         }
@@ -349,14 +377,20 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply({ content: 'Compiling blast vectors...', flags: [MessageFlags.Ephemeral] });
         const users = getLinkedUsers();
         let successCount = 0;
+        let failCount = 0;
+
+        const dmContent = `\n\n**Message from Admin:**\n\n"${messageText}"\n\nTo stop receiving these notifications you can type \`/unlink\``;
+
         for (const userId of users) {
             try {
                 const userToDm = await client.users.fetch(userId);
-                await userToDm.send(`\n\n**Admin Global Dispatch Alert Broadcast:**\n\n"${messageText}"`);
+                await userToDm.send(dmContent);
                 successCount++;
-            } catch {}
+            } catch {
+                failCount++;
+            }
         }
-        await interaction.followUp({ content: `Broadcast task executed against ${successCount} entries successfully.`, flags: [MessageFlags.Ephemeral] });
+        await interaction.followUp({ content: `Broadcast complete. Sent: ${successCount} | Failed: ${failCount}`, flags: [MessageFlags.Ephemeral] });
     }
 });
 
@@ -378,8 +412,9 @@ client.once('ready', async () => {
         if (!saved.dev) saved.dev = current.dev;
         saveVersions(saved.live, saved.dev);
         
+        const assets = { icon: current.icon, banner: current.banner };
         try { client.user.setActivity(`AC Live: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
-        await sendStartupEmbed(saved.live, saved.dev);
+        await sendStartupEmbed(saved.live, saved.dev, assets);
     }
 
     nextCheckTime = Date.now() + CHECK_INTERVAL * 1000;
