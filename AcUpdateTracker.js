@@ -15,7 +15,7 @@ const UPDATE_ROLE_ID = process.env.UPDATE_ROLE_ID || '1463264519953580218';
 const BOT_NAME = 'tack';
 
 // Meta Oculus GraphQL API Constants
-const GRAPHQL_URL = 'https://graph.oculus.com/graphql';
+const GRAPHQL_URL = '[https://graph.oculus.com/graphql](https://graph.oculus.com/graphql)';
 const ACCESS_TOKEN = 'OC|752908224809889|';
 const APP_ID = '7190422614401072';
 const DOC_ID = '6771539532935162';
@@ -138,7 +138,7 @@ async function notifyLinkedUsers(current, previous, branchName, assets) {
 
     const now = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
-        .setTitle(`🌍 Meta\nUpdate Detected!`)
+        .setTitle(`🌍 Meta Update Detected!`)
         .setColor(0x00FF00) 
         .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
         .addFields(
@@ -168,9 +168,9 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
         const now = Math.floor(Date.now() / 1000);
         const isLive = branchName === 'Live';
         
-        // Exact styling clones derived from image logs
+        // Exact styling layouts fixed to match image templates completely
         const embedColor = isLive ? 0x00FF00 : 0x2B2D31; 
-        const titleText = isLive ? '🌍 Meta\nUpdate Detected!' : '🛠️ Developer Builds\nUpdate Detected!';
+        const titleText = isLive ? '🌍 Meta Update Detected!' : '🛠️ Developer Builds Update Detected!';
 
         const embed = new EmbedBuilder()
             .setTitle(titleText)
@@ -186,7 +186,7 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         
-        // Text strings and formats match the layout perfectly
+        // Exact content lines match images completely
         const alertContent = isLive 
             ? `<@&${UPDATE_ROLE_ID}> **[${branchName} Branch Update Alert]**` 
             : `**[Silent Log] New build detected on Developer Branch.**`;
@@ -247,7 +247,7 @@ async function runTrackerLoop() {
 
             if (updated) {
                 saveVersions(saved.live, saved.dev);
-                try { client.user.setActivity(`AC Live: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
+                try { client.user.setActivity(`Animal Company: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
             }
         }
     } catch (err) { log(`Error inside core interval process loop: ${err.message}`, 'red'); }
@@ -310,8 +310,8 @@ client.on('interactionCreate', async interaction => {
 
         log(`Dispatched forced /test layout render for user profile ${user.tag}`, 'orange');
         
-        await sendMetaUpdateEmbed(saved.live || '1.58.1-LIVE-MOCK', '1.58.0-OLD-MOCK', 'Live', assets);
-        await sendMetaUpdateEmbed(saved.dev || '1.60.2-DEV-MOCK', '1.59.1-OLD-MOCK', 'Developer Builds', assets);
+        await sendMetaUpdateEmbed(saved.live || '1.76.1.3001', '1.75.0.2900', 'Live', assets);
+        await sendMetaUpdateEmbed(saved.dev || '1.77.2.3100', '1.76.1.3001', 'Developer Builds', assets);
         
         await interaction.editReply('✅ Double-mock branch test dispatches generated completely into channel directories.');
     }
@@ -394,7 +394,8 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-client.once('ready', async () => {
+// Added the Discord v14 clientReady mitigation handler
+client.once('clientReady', async () => {
     log(`${BOT_NAME} logged in as ${client.user.tag}`, 'cyan');
     
     const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -419,6 +420,12 @@ client.once('ready', async () => {
 
     nextCheckTime = Date.now() + CHECK_INTERVAL * 1000;
     loopTimeout = setTimeout(runTrackerLoop, CHECK_INTERVAL * 1000);
+});
+
+// Backward compatibility fallback hook for older discord setups
+client.once('ready', () => {
+    if (!client.isReady()) return;
+    client.emit('clientReady');
 });
 
 if (TOKEN) {
