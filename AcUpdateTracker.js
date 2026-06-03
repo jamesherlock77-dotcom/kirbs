@@ -194,7 +194,6 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
         const embed = new EmbedBuilder();
 
         if (isLive) {
-            // Live Channel Setup - Matches public visual layout exactly
             embed.setTitle('Update Detected!')
                  .setColor(0x00FF00)
                  .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)\n**Wooster Games, Animal Company**`)
@@ -204,7 +203,6 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
                  );
             if (assets?.banner) embed.setImage(assets.banner);
         } else {
-            // Developer Build Channel Setup - Banner isolated only inside the top right thumbnail slot
             embed.setTitle('🛠️ Developer Builds Update Detected!')
                  .setColor(0x2B2D31)
                  .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
@@ -217,11 +215,13 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         
-        const alertContent = isLive 
-            ? `<@&${UPDATE_ROLE_ID}> **[${branchName} Branch Update Alert]**` 
-            : `**[Silent Log] New build detected on Developer Branch.**`;
+        // Removed text log lines entirely. It now sends clean embeds directly.
+        const alertContent = isLive ? `<@&${UPDATE_ROLE_ID}>` : null;
 
-        await channel.send({ content: alertContent, embeds: [embed] });
+        await channel.send({ 
+            content: alertContent, 
+            embeds: [embed] 
+        });
 
         if (isLive) {
             await notifyLinkedUsers(current, previous, branchName, assets);
