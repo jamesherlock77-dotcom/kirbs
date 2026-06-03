@@ -1,0 +1,14 @@
+{
+  "name": "animal-company-tracker",
+  "version": "1.0.0",
+  "description": "Tracks Animal Company store page for game updates",
+  "main": "AcUpdateTracker.js",
+  "scripts": {
+    "start": "node AcUpdateTracker.js"
+  },
+  "dependencies": {
+    "chalk": "^4.1.2",
+    "discord.js": "^14.22.1",
+    "puppeteer": "^24.20.0"
+  }
+}
