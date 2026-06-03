@@ -138,25 +138,25 @@ async function notifyLinkedUsers(current, previous, branchName, assets) {
 
     const now = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
-        .setTitle(`Animal Company\n${branchName} Update Detected!`)
-        .setColor(0x00FF00) // Public Updates get Green
+        .setTitle(`🌍 Meta\nUpdate Detected!`)
+        .setColor(0x00FF00) 
         .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
         .addFields(
             { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
-            { name: '🔴 | Last Logged:', value: previous || 'Unknown', inline: true }
+            { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: true }
         );
 
     if (assets?.banner) embed.setImage(assets.banner);
     if (assets?.icon) embed.setThumbnail(assets.icon);
 
-    const dmMessage = `Hey there <@USER_ID> 👋\n\nAn update has been detected on the **${branchName}** branch for Animal Company!\n\n🟢 New Version: ${current}\n🔴 Last Version: ${previous || 'Unknown'}\n\nUse \`/unlink\` to turn off notifications.`;
+    const dmContent = `\n\n\n**Message from <@${client.user.id}>**\n\nAn update has been detected on the public release branch for Animal Company!\n\n🟢 **New Version:** ${current}\n🔴 **Last Version:** ${previous || 'Unknown'}\n\nTo stop receiving these notifications you can do **/unlink** in the same server you linked from\n\n-# coolio`;
 
     for (const userId of users) {
         try {
             const user = await client.users.fetch(userId);
             if (!user) continue;
             await user.send({
-                content: dmMessage.replace('<@USER_ID>', `<@${userId}>`),
+                content: dmContent,
                 embeds: [embed]
             });
         } catch (err) { log(`Failed to DM ${userId}: ${err.message}`, 'red'); }
@@ -168,7 +168,7 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
         const now = Math.floor(Date.now() / 1000);
         const isLive = branchName === 'Live';
         
-        // Match layout details perfectly from screenshots
+        // Exact styling clones derived from image logs
         const embedColor = isLive ? 0x00FF00 : 0x2B2D31; 
         const titleText = isLive ? '🌍 Meta\nUpdate Detected!' : '🛠️ Developer Builds\nUpdate Detected!';
 
@@ -178,7 +178,7 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
             .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
             .addFields(
                 { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
-                { name: '🔴 | Last Logged:', value: previous || 'Unknown', inline: true }
+                { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: true }
             );
 
         if (assets?.banner) embed.setImage(assets.banner);
@@ -186,7 +186,7 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         
-        // PING CONFIGURATION: Only pings roles on the Live branch
+        // Text strings and formats match the layout perfectly
         const alertContent = isLive 
             ? `<@&${UPDATE_ROLE_ID}> **[${branchName} Branch Update Alert]**` 
             : `**[Silent Log] New build detected on Developer Branch.**`;
@@ -379,7 +379,7 @@ client.on('interactionCreate', async interaction => {
         let successCount = 0;
         let failCount = 0;
 
-        const dmContent = `\n\n**Message from Admin:**\n\n"${messageText}"\n\nTo stop receiving these notifications you can type \`/unlink\``;
+        const dmContent = `\n\n\n**Message from <@${interaction.user.id}>**\n\n"${messageText}"\n\nTo stop receiving these notifications you can do **/unlink** in the same server you linked from\n\n-# coolio`;
 
         for (const userId of users) {
             try {
@@ -413,7 +413,7 @@ client.once('ready', async () => {
         saveVersions(saved.live, saved.dev);
         
         const assets = { icon: current.icon, banner: current.banner };
-        try { client.user.setActivity(`AC Live: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
+        try { client.user.setActivity(`Animal Company: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
         await sendStartupEmbed(saved.live, saved.dev, assets);
     }
 
