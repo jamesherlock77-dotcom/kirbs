@@ -139,7 +139,7 @@ async function notifyLinkedUsers(current, previous, branchName, assets) {
     const now = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
         .setTitle(`Animal Company\n${branchName} Update Detected!`)
-        .setColor(0x00FF00) // Public updates get Green
+        .setColor(0x00FF00) // Public Updates get Green
         .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
         .addFields(
             { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
@@ -166,13 +166,14 @@ async function notifyLinkedUsers(current, previous, branchName, assets) {
 async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
     try {
         const now = Math.floor(Date.now() / 1000);
-        
         const isLive = branchName === 'Live';
-        const embedColor = isLive ? 0x00FF00 : 0x2B2D31; // Green for public Live, Off-Black/Stealth for Developer
-        const titlePrefix = isLive ? '🌍 Meta' : '🛠️ Developer Builds';
+        
+        // Match layout details perfectly from screenshots
+        const embedColor = isLive ? 0x00FF00 : 0x2B2D31; 
+        const titleText = isLive ? '🌍 Meta\nUpdate Detected!' : '🛠️ Developer Builds\nUpdate Detected!';
 
         const embed = new EmbedBuilder()
-            .setTitle(`${titlePrefix}\nUpdate Detected!`)
+            .setTitle(titleText)
             .setColor(embedColor)
             .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
             .addFields(
@@ -185,14 +186,13 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         
-        // PING LOGIC: Only perform pings on the Live channel updates
+        // PING CONFIGURATION: Only pings roles on the Live branch
         const alertContent = isLive 
             ? `<@&${UPDATE_ROLE_ID}> **[${branchName} Branch Update Alert]**` 
             : `**[Silent Log] New build detected on Developer Branch.**`;
 
         await channel.send({ content: alertContent, embeds: [embed] });
 
-        // Only DM subscribers for public Live updates
         if (isLive) {
             await notifyLinkedUsers(current, previous, branchName, assets);
         }
