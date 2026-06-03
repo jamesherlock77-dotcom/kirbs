@@ -15,7 +15,7 @@ const UPDATE_ROLE_ID = process.env.UPDATE_ROLE_ID || '1463264519953580218';
 const BOT_NAME = 'tack';
 
 // Meta Oculus GraphQL API Constants
-const GRAPHQL_URL = '[https://graph.oculus.com/graphql](https://graph.oculus.com/graphql)';
+const GRAPHQL_URL = 'https://graph.oculus.com/graphql';
 const ACCESS_TOKEN = 'OC|752908224809889|';
 const APP_ID = '7190422614401072';
 const DOC_ID = '6771539532935162';
@@ -56,6 +56,38 @@ function log(text, color = 'white') {
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 client.commands = new Collection();
 
+// --- Meta Quest Store Asset Scraper ---
+async function fetchStoreAssets() {
+    try {
+        // Fetch public store page to extract image assets directly from the application meta tags
+        const response = await axios.get(`https://www.meta.com/experiences/${APP_ID}/`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+            timeout: 10000
+        });
+        const html = response.data;
+
+        // Pull OpenGraph images (the wide landscape banner)
+        const ogImageMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
+        let banner = ogImageMatch ? ogImageMatch[1].replace(/&amp;/g, '&') : null;
+
+        // Pull application icon image
+        const twitterImageMatch = html.match(/<meta\s+name=["']twitter:image["']\s+content=["']([^"']+)["']/i);
+        let icon = twitterImageMatch ? twitterImageMatch[1].replace(/&amp;/g, '&') : null;
+
+        // Fallbacks if one tag fails
+        if (!icon && banner) icon = banner;
+        if (!banner && icon) banner = icon;
+
+        return { icon, banner };
+    } catch (err) {
+        log(`Failed to fetch live store images: ${err.message}. Using backup assets.`, 'orange');
+        return {
+            icon: 'https://scontent.oculuscdn.com/v/t64.5771-25/75211516_2016335122100224_5701833512398516130_n.png',
+            banner: 'https://scontent.oculuscdn.com/v/t64.5771-25/38974488_8194481023912111_6182390847110940652_n.png'
+        };
+    }
+}
+
 // --- Meta Oculus API Client ---
 async function fetchMetaGameData() {
     try {
@@ -81,12 +113,11 @@ async function fetchMetaGameData() {
         const devNodes = node?.primary_binaries?.nodes || [];
         const devVersion = devNodes[0]?.version || null;
 
-        // Fetch Live Store Assets dynamically
-        const gameIcon = node?.icon_image?.uri || null;
-        const gameBanner = node?.hero_16_9_image?.uri || node?.main_image?.uri || null;
+        // Fetch Assets dynamically from store engine
+        const assets = await fetchStoreAssets();
 
         log(`API Fetch -> Live: ${liveVersion} | Dev: ${devVersion}`, 'green');
-        return { live: liveVersion, dev: devVersion, icon: gameIcon, banner: gameBanner };
+        return { live: liveVersion, dev: devVersion, icon: assets.icon, banner: assets.banner };
     } catch (err) {
         log(`Error calling Oculus GraphQL API: ${err.message}`, 'red');
         return null;
@@ -168,7 +199,6 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
         const now = Math.floor(Date.now() / 1000);
         const isLive = branchName === 'Live';
         
-        // Exact styling layouts fixed to match image templates completely
         const embedColor = isLive ? 0x00FF00 : 0x2B2D31; 
         const titleText = isLive ? '🌍 Meta Update Detected!' : '🛠️ Developer Builds Update Detected!';
 
@@ -186,7 +216,6 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         
-        // Exact content lines match images completely
         const alertContent = isLive 
             ? `<@&${UPDATE_ROLE_ID}> **[${branchName} Branch Update Alert]**` 
             : `**[Silent Log] New build detected on Developer Branch.**`;
@@ -394,7 +423,6 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// Added the Discord v14 clientReady mitigation handler
 client.once('clientReady', async () => {
     log(`${BOT_NAME} logged in as ${client.user.tag}`, 'cyan');
     
@@ -422,7 +450,6 @@ client.once('clientReady', async () => {
     loopTimeout = setTimeout(runTrackerLoop, CHECK_INTERVAL * 1000);
 });
 
-// Backward compatibility fallback hook for older discord setups
 client.once('ready', () => {
     if (!client.isReady()) return;
     client.emit('clientReady');
