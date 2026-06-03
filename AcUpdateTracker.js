@@ -1,10 +1,10 @@
 const { Client, GatewayIntentBits, EmbedBuilder, ActivityType, Collection, REST, Routes, ApplicationCommandOptionType, MessageFlags } = require('discord.js');
-const puppeteer = require('puppeteer');
+const axios = require('axios');
 const fs = require('fs');
 const chalk = require('chalk');
 const path = require('path');
 
-// --- Configuration (Safe Cloud Fallbacks) ---
+// --- Configuration (Safe Cloud Variables) ---
 const TOKEN = process.env.DISCORD_TOKEN || '';
 const CLIENT_ID = process.env.CLIENT_ID || '';
 const GUILD_ID = process.env.GUILD_ID || '';
@@ -14,28 +14,30 @@ const OWNER_USER_IDS = (process.env.OWNER_USER_IDS || '1012186051105804289').spl
 const UPDATE_ROLE_ID = process.env.UPDATE_ROLE_ID || '1463264519953580218'; 
 
 const BOT_NAME = 'tack';
-const META_URL = 'https://www.meta.com/experiences/animal-company/7190422614401072/';
 const BANNER_FILE = path.join(__dirname, 'banner.png');
 
-const META_VERSION_FILE = './lastMetaVersion.txt';
+// Meta Oculus GraphQL API Constants
+const GRAPHQL_URL = 'https://graph.oculus.com/graphql';
+const ACCESS_TOKEN = 'OC|752908224809889|';
+const APP_ID = '7190422614401072';
+const DOC_ID = '6771539532935162';
+
+const META_VERSION_FILE = './lastMetaVersion.json'; 
 const LOG_FILE = './LastLog.txt';
 const LINKED_USERS_FILE = './linkedUsers.txt';
 
 let CHECK_INTERVAL = 60; // In seconds
 let nextCheckTime = null;
-let countdownInterval = null;
 let loopTimeout = null;
 
 // --- Logger System ---
 fs.writeFileSync(LOG_FILE, `=== Bot Started at ${new Date().toLocaleString()} ===\n`, 'utf8');
 const origLog = console.log;
 const origErr = console.error;
-const origWarn = console.warn;
 
 function writeToLogFile(text) { fs.appendFileSync(LOG_FILE, text + '\n', 'utf8'); }
 console.log = (...args) => { writeToLogFile(`[LOG] ${args.join(' ')}`); origLog(...args); };
 console.error = (...args) => { writeToLogFile(`[ERROR] ${args.join(' ')}`); origErr(...args); };
-console.warn = (...args) => { writeToLogFile(`[WARN] ${args.join(' ')}`); origWarn(...args); };
 
 function log(text, color = 'white') {
     const timestamp = new Date().toLocaleString();
@@ -47,6 +49,7 @@ function log(text, color = 'white') {
         case 'blue': origLog(chalk.blue(msg)); break;
         case 'magenta': origLog(chalk.magenta(msg)); break;
         case 'cyan': origLog(chalk.cyan(msg)); break;
+        case 'orange': origLog(chalk.hex('#FFA500')(msg)); break;
         default: origLog(msg);
     }
 }
@@ -55,46 +58,51 @@ function log(text, color = 'white') {
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 client.commands = new Collection();
 
-// --- Puppeteer Scraper ---
-async function fetchMetaVersion() {
-    let browser;
+// --- Meta Oculus API Client ---
+async function fetchMetaGameData() {
     try {
-        const launchOptions = {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu']
-        };
-        
-        if (process.platform === 'win32') {
-            launchOptions.executablePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-        }
-
-        browser = await puppeteer.launch(launchOptions);
-        const page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-        
-        await page.goto(META_URL, { waitUntil: 'networkidle2', timeout: 45000 });
-
-        const version = await page.evaluate(() => {
-            const divs = Array.from(document.querySelectorAll('div'));
-            for (const el of divs) {
-                if (el.innerText && el.innerText.startsWith('Version')) {
-                    return el.innerText.replace('Version', '').trim();
-                }
-            }
-            return null;
+        const payload = new URLSearchParams({
+            access_token: ACCESS_TOKEN,
+            variables: JSON.stringify({ applicationID: APP_ID }),
+            doc_id: DOC_ID
         });
 
-        log('Fetched Meta version: ' + version, 'green');
-        return version;
+        const response = await axios.post(GRAPHQL_URL, payload.toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 15000
+        });
+
+        const data = response.data;
+        
+        // Extract Live Version
+        const liveNodes = data?.data?.node?.liveChannel?.nodes || [];
+        const liveVersion = liveNodes[0]?.latest_supported_binary?.version || null;
+
+        // Extract Dev Version
+        const devNodes = data?.data?.node?.primary_binaries?.nodes || [];
+        const devVersion = devNodes[0]?.version || null;
+
+        log(`API Fetch Successful -> Live: ${liveVersion} | Dev: ${devVersion}`, 'green');
+        return { live: liveVersion, dev: devVersion };
     } catch (err) {
-        log('Error fetching Meta version: ' + err.message, 'red');
+        log(`Error calling Oculus GraphQL API: ${err.message}`, 'red');
         return null;
-    } finally {
-        if (browser) await browser.close();
     }
 }
 
-// --- File Storage Utilities ---
+// --- Local File Cache Storage ---
+function getSavedVersions() {
+    if (!fs.existsSync(META_VERSION_FILE)) return { live: null, dev: null };
+    try {
+        return JSON.parse(fs.readFileSync(META_VERSION_FILE, 'utf8'));
+    } catch {
+        return { live: null, dev: null };
+    }
+}
+function saveVersions(live, dev) {
+    fs.writeFileSync(META_VERSION_FILE, JSON.stringify({ live, dev }, null, 2), 'utf8');
+}
+
 function getLinkedUsers() {
     if (!fs.existsSync(LINKED_USERS_FILE)) return [];
     return fs.readFileSync(LINKED_USERS_FILE, 'utf8').split('\n').map(s => s.trim()).filter(s => s.length > 0);
@@ -121,116 +129,119 @@ async function removeLinkedUser(userId) {
 }
 
 // --- Notification Dispatches ---
-async function notifyLinkedUsers(currentVersion, previousVersion) {
+async function notifyLinkedUsers(current, previous, branchName) {
     const users = getLinkedUsers();
-    if (!users.length) return log('No linked users to notify.', 'cyan');
+    if (!users.length) return;
 
     const now = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
-        .setTitle('Meta\nUpdate Detected!')
-        .setColor(0x800080)
+        .setTitle(`Animal Company\n${branchName} Update Detected!`)
+        .setColor(branchName === 'Live' ? 0x00FF00 : 0xFF00FF)
         .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
         .addFields(
-            { name: '🟢 | Updated Version:', value: `\`\`\`${currentVersion}\`\`\``, inline: true },
-            { name: '🔴 | Last Logged:', value: previousVersion || currentVersion, inline: true }
+            { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
+            { name: '🔴 | Last Logged:', value: previous || 'Unknown', inline: true }
         )
         .setImage('attachment://banner.png');
 
-    const dmMessage = `Hey there <@USER_ID> 👋\n\nWe're just letting you know we detected an update for Animal Company!\n\n🟢 Current Version: ${currentVersion}\n🔴 Last Version: ${previousVersion || 'Unknown'}\n\nTo stop receiving these notifications you can do:\n\`\`\`\n/unlink\n\`\`\`\n\nHave a good one!`;
+    const dmMessage = `Hey there <@USER_ID> 👋\n\nAn update has been detected on the **${branchName}** branch for Animal Company!\n\n🟢 New Version: ${current}\n🔴 Last Version: ${previous || 'Unknown'}\n\nUse \`/unlink\` to turn off notifications.`;
 
     for (const userId of users) {
         try {
             const user = await client.users.fetch(userId);
             if (!user) continue;
-
             await user.send({
                 content: dmMessage.replace('<@USER_ID>', `<@${userId}>`),
                 embeds: [embed],
                 files: [BANNER_FILE]
             });
-            log(`DM sent to ${user.tag} (${userId})`, 'green');
-        } catch (err) {
-            log(`Failed to DM ${userId}: ${err.message}`, 'red');
-        }
+        } catch (err) { log(`Failed to DM ${userId}: ${err.message}`, 'red'); }
     }
 }
 
-async function sendMetaUpdateEmbed(current, previous) {
+async function sendMetaUpdateEmbed(current, previous, branchName) {
     try {
         const now = Math.floor(Date.now() / 1000);
         const embed = new EmbedBuilder()
-            .setTitle('Meta\nUpdate Detected!')
-            .setColor(0x800080)
+            .setTitle(`Animal Company\n${branchName} Update Detected!`)
+            .setColor(branchName === 'Live' ? 0x00FF00 : 0xFF00FF)
             .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)`)
             .addFields(
                 { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: true },
-                { name: '🔴 | Last Logged:', value: previous || current, inline: true }
+                { name: '🔴 | Last Logged:', value: previous || 'Unknown', inline: true }
             )
             .setImage('attachment://banner.png');
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
-        await channel.send({ content: `<@&${UPDATE_ROLE_ID}>`, embeds: [embed], files: [BANNER_FILE] });
+        await channel.send({ content: `<@&${UPDATE_ROLE_ID}> **[${branchName} Branch Update Alert]**`, embeds: [embed], files: [BANNER_FILE] });
 
-        await notifyLinkedUsers(current, previous);
-        log(`Sent Meta update embed. Current=${current}, Last=${previous}`, 'blue');
-    } catch (err) { log('Error sending Meta embed: ' + err.message, 'red'); }
+        await notifyLinkedUsers(current, previous, branchName);
+        log(`Broadcasted ${branchName} update to channels and users.`, 'blue');
+    } catch (err) { log('Error sending update embed: ' + err.message, 'red'); }
 }
 
-async function sendStartupEmbed(currentMetaVersion) {
+async function sendStartupEmbed(live, dev) {
     try {
         const now = Math.floor(Date.now() / 1000);
         const embed = new EmbedBuilder()
-            .setTitle('Tracker Started')
+            .setTitle('Tracker System Online (GraphQL API Mode)')
             .setColor(0x800080)
-            .setDescription(`\nCurrent Animal Company Version: \`\`\`${currentMetaVersion || "Unknown"}\`\`\`\n⏳ <t:${now}:F> (<t:${now}:R>)`);
+            .setDescription(`⏳ Status initialized <t:${now}:R>`)
+            .addFields(
+                { name: '🌍 Live Store Version', value: `\`\`\`${live || "Unknown"}\`\`\``, inline: true },
+                { name: '🛠️ Developer Version', value: `\`\`\`${dev || "Unknown"}\`\`\``, inline: true }
+            );
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         await channel.send({ embeds: [embed] });
-        log('Sent startup embed with current version.', 'green');
     } catch (err) { log('Error sending startup embed: ' + err.message, 'red'); }
 }
 
-// --- Main Loops ---
+// --- Main Engine Loop ---
 async function runTrackerLoop() {
     clearTimeout(loopTimeout);
     try {
-        const lastMetaVersion = fs.existsSync(META_VERSION_FILE) ? fs.readFileSync(META_VERSION_FILE, 'utf8').trim() : null;
-        const currentMetaVersion = await fetchMetaVersion();
+        const saved = getSavedVersions();
+        const current = await fetchMetaGameData();
 
-        if (currentMetaVersion && currentMetaVersion !== lastMetaVersion) {
-            fs.writeFileSync(META_VERSION_FILE, currentMetaVersion, 'utf8');
-            try { client.user.setActivity(`Animal Company: ${currentMetaVersion}`, { type: ActivityType.Watching }); } catch {}
-            await sendMetaUpdateEmbed(currentMetaVersion, lastMetaVersion);
+        if (current) {
+            let updated = false;
+
+            // Check Live Branch Change
+            if (current.live && current.live !== saved.live) {
+                await sendMetaUpdateEmbed(current.live, saved.live, 'Live');
+                saved.live = current.live;
+                updated = true;
+            }
+
+            // Check Dev Branch Change
+            if (current.dev && current.dev !== saved.dev) {
+                await sendMetaUpdateEmbed(current.dev, saved.dev, 'Developer Builds');
+                saved.dev = current.dev;
+                updated = true;
+            }
+
+            if (updated) {
+                saveVersions(saved.live, saved.dev);
+                try { client.user.setActivity(`AC Live: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
+            }
         }
-    } catch (err) { log(`Error inside engine processing loop: ${err.message}`, 'red'); }
+    } catch (err) { log(`Error inside core interval process loop: ${err.message}`, 'red'); }
 
     nextCheckTime = Date.now() + CHECK_INTERVAL * 1000;
     loopTimeout = setTimeout(runTrackerLoop, CHECK_INTERVAL * 1000);
 }
 
-function startCountdown() {
-    clearInterval(countdownInterval);
-    countdownInterval = setInterval(() => {
-        if (!nextCheckTime) return;
-        const diff = Math.max(0, Math.floor((nextCheckTime - Date.now()) / 1000));
-        const mins = Math.floor(diff / 60);
-        const secs = diff % 60;
-        if (process.platform === 'win32') {
-            process.stdout.write(chalk.cyan(`Next check in: ${mins}m ${secs}s   \r`));
-        }
-    }, 1000);
-}
-
-// --- Slash Commands Definitions ---
+// --- Slash Commands Setup ---
 const commands = [
-    { name: 'test', description: 'Triggers a mock notification check using the last saved game version' },
-    { name: 'checkupdate', description: 'Checks for updates manually' },
-    { name: 'log', description: 'Gets the last log file' },
-    { name: 'uptime', description: 'Shows the bot uptime' },
-    { name: 'settimer', description: 'Sets the check timer (seconds)', options: [{ name: 'seconds', type: ApplicationCommandOptionType.Integer, description: 'Seconds for timer', required: true }] }, 
-    { name: 'link', description: 'Subscribe to Animal Company update notifications' },
-    { name: 'unlink', description: 'Unsubscribe from Animal Company update notifications' },
-    { name: 'message', description: 'Broadcasts a message to all linked users', options: [{ name: 'text', type: ApplicationCommandOptionType.String, description: 'The message you want to send', required: true }] }
+    { name: 'test', description: 'Triggers a mock alert layout using live cached stats' },
+    { name: 'checkupdate', description: 'Instantly polls Oculus GraphQL data logs' },
+    { name: 'log', description: 'Outputs the system text diagnostics logs' },
+    { name: 'uptime', description: 'Returns active bot runtime statistics' },
+    { name: 'settimer', description: 'Alters interval delay check value (seconds)', options: [{ name: 'seconds', type: ApplicationCommandOptionType.Integer, description: 'Seconds for loop execution', required: true }] }, 
+    { name: 'link', description: 'Subscribe to Animal Company branch update logs' },
+    { name: 'unlink', description: 'Stop receiving branch push alerts' },
+    { name: 'message', description: 'Admin communication blast to subscribers', options: [{ name: 'text', type: ApplicationCommandOptionType.String, description: 'Text description body', required: true }] }
 ];
 
 client.on('interactionCreate', async interaction => {
@@ -244,10 +255,10 @@ client.on('interactionCreate', async interaction => {
         }
         const added = await addLinkedUser(user.id);
         if (added) {
-            await interaction.reply({ content: 'You have been linked! Check your DMs.', flags: [MessageFlags.Ephemeral] });
-            try { await user.send(`Hey there <@${user.id}>!\n\nYou've been subscribed to Animal Company update notifications.`); } catch {}
+            await interaction.reply({ content: 'Linked successfully! Check your direct messages.', flags: [MessageFlags.Ephemeral] });
+            try { await user.send(`Hey <@${user.id}>! You've successfully locked in subscription alerts for Animal Company.`); } catch {}
         } else {
-            await interaction.reply({ content: 'You are already linked!', flags: [MessageFlags.Ephemeral] });
+            await interaction.reply({ content: 'Account already configured into database tracking lists.', flags: [MessageFlags.Ephemeral] });
         }
         return;
     }
@@ -255,74 +266,97 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'unlink') {
         const removed = await removeLinkedUser(user.id);
         if (removed) {
-            await interaction.reply({ content: '✅ You have been unlinked!', flags: [MessageFlags.Ephemeral] });
+            await interaction.reply({ content: '✅ Subscriptions disabled successfully.', flags: [MessageFlags.Ephemeral] });
         } else {
-            await interaction.reply({ content: '⚠️ You are not currently linked!', flags: [MessageFlags.Ephemeral] });
+            await interaction.reply({ content: '⚠️ Profile wasn\'t actively bound inside subscription list profiles.', flags: [MessageFlags.Ephemeral] });
         }
         return;
     }
 
-    // Admin Permissions Guard
+    // Admin Security Checking 
     if (!OWNER_USER_IDS.includes(user.id)) {
-        return interaction.reply({ content: 'Unauthorised.', flags: [MessageFlags.Ephemeral] });
+        return interaction.reply({ content: 'Action prohibited. Unauthorized operator credentials.', flags: [MessageFlags.Ephemeral] });
     }
 
     if (commandName === 'test') {
         await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-        const dummyVersion = fs.existsSync(META_VERSION_FILE) ? fs.readFileSync(META_VERSION_FILE, 'utf8').trim() : '1.0.0-TEST';
+        const saved = getSavedVersions();
+        log(`Dispatched forced /test layout render for user profile ${user.tag}`, 'orange');
         
-        log(`Running manual /test notification dispatch triggered by ${user.tag}`, 'orange');
-        await sendMetaUpdateEmbed(dummyVersion, `${dummyVersion} (TEST-MOCK)`);
+        await sendMetaUpdateEmbed(saved.live || '1.58.1-LIVE-MOCK', '1.58.0-OLD-MOCK', 'Live (Forced Test)');
+        await sendMetaUpdateEmbed(saved.dev || '1.60.2-DEV-MOCK', '1.59.1-OLD-MOCK', 'Developer Builds (Forced Test)');
         
-        await interaction.editReply('✅ Test notification sent successfully to your tracking channel and linked users.');
+        await interaction.editReply('✅ Double-mock branch test dispatches generated completely into channel directories.');
     }
 
     if (commandName === 'checkupdate') {
         await interaction.deferReply();
-        const lastMetaVersion = fs.existsSync(META_VERSION_FILE) ? fs.readFileSync(META_VERSION_FILE, 'utf8').trim() : null;
-        const currentMetaVersion = await fetchMetaVersion();
-        if (currentMetaVersion && currentMetaVersion !== lastMetaVersion) {
-            fs.writeFileSync(META_VERSION_FILE, currentMetaVersion, 'utf8');
-            await sendMetaUpdateEmbed(currentMetaVersion, lastMetaVersion);
-            await interaction.editReply(`✅ Update detected! Current: ${currentMetaVersion}`);
-        } else {
-            await interaction.editReply(`No update detected. Current: ${currentMetaVersion || 'Unknown'}`);
+        const saved = getSavedVersions();
+        const current = await fetchMetaGameData();
+
+        if (!current) {
+            return interaction.editReply('❌ API lookup operation terminated with standard communication errors.');
         }
+
+        let response = `**__Direct Manual API Audit Check Results:__**\n`;
+        response += `🌍 **Live Branch:** Saved: \`${saved.live || 'None'}\` ➜ Direct API: \`${current.live || 'Error'}\`\n`;
+        response += `🛠️ **Dev Branch:** Saved: \`${saved.dev || 'None'}\` ➜ Direct API: \`${current.dev || 'Error'}\`\n\n`;
+
+        let updated = false;
+        if (current.live && current.live !== saved.live) {
+            await sendMetaUpdateEmbed(current.live, saved.live, 'Live');
+            saved.live = current.live;
+            updated = true;
+        }
+        if (current.dev && current.dev !== saved.dev) {
+            await sendMetaUpdateEmbed(current.dev, saved.dev, 'Developer Builds');
+            saved.dev = current.dev;
+            updated = true;
+        }
+
+        if (updated) {
+            saveVersions(saved.live, saved.dev);
+            response += `⚡ *Discrepancies identified! Cache directories rewritten and alerts dispatched.*`;
+        } else {
+            response += `✅ *System cache matches live database mappings. No changes needed.*`;
+        }
+
+        await interaction.editReply(response);
     }
 
     if (commandName === 'log') {
         if (fs.existsSync(LOG_FILE)) await interaction.reply({ files: [LOG_FILE] });
-        else await interaction.reply('No logs found.');
+        else await interaction.reply('Diagnostic documents empty or absent.');
     }
 
     if (commandName === 'uptime') {
         const uptime = process.uptime();
-        await interaction.reply(`Bot uptime: ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`);
+        await interaction.reply(`Bot execution uptime trace length: ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`);
     }
 
     if (commandName === 'settimer') {
         const seconds = interaction.options.getInteger('seconds');
-        if (seconds < 60) return interaction.reply('Timer must be >= 60 seconds.');
+        if (seconds < 10) return interaction.reply('Interval timing rules restrict loops lower than 10 seconds.');
         CHECK_INTERVAL = seconds;
         nextCheckTime = Date.now() + CHECK_INTERVAL * 1000;
         clearTimeout(loopTimeout);
         loopTimeout = setTimeout(runTrackerLoop, CHECK_INTERVAL * 1000);
-        await interaction.reply(`Interval changed to ${seconds} seconds.`);
+        await interaction.reply(`Execution sync loops established at dynamic tracking frequencies of every ${seconds} seconds.`);
     }
 
     if (commandName === 'message') {
         const messageText = interaction.options.getString('text');
-        await interaction.reply({ content: 'Broadcasting...', flags: [MessageFlags.Ephemeral] });
+        await interaction.reply({ content: 'Compiling blast vectors...', flags: [MessageFlags.Ephemeral] });
         const users = getLinkedUsers();
         let successCount = 0;
         for (const userId of users) {
             try {
                 const userToDm = await client.users.fetch(userId);
-                await userToDm.send(`\n\n**Message from Admin:**\n\n"${messageText}"`);
+                await userToDm.send(`\n\n**Admin Global Dispatch Alert Broadcast:**\n\n"${messageText}"`);
                 successCount++;
             } catch {}
         }
-        await interaction.followUp({ content: `Broadcast complete. Sent to ${successCount} users.`, flags: [MessageFlags.Ephemeral] });
+        await interaction.followUp({ content: `Broadcast task executed against ${successCount} entries successfully.`, flags: [MessageFlags.Ephemeral] });
     }
 });
 
@@ -332,25 +366,28 @@ client.once('ready', async () => {
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
         await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-        log('Successfully registered slash commands.', 'green');
-    } catch (err) { log('Failed to register application slash commands: ' + err.message, 'red'); }
+        log('Dynamic application command schemas injected successfully.', 'green');
+    } catch (err) { log('Command loading exception error rules: ' + err.message, 'red'); }
 
-    try {
-        const currentMetaVersion = await fetchMetaVersion();
-        if (currentMetaVersion) {
-            fs.writeFileSync(META_VERSION_FILE, currentMetaVersion, 'utf8');
-            client.user.setActivity(`Animal Company: ${currentMetaVersion}`, { type: ActivityType.Watching });
-        }
-        await sendStartupEmbed(currentMetaVersion);
-    } catch (err) { log('Startup initialization error: ' + err.message, 'red'); }
+    // First API Pull Setup
+    const current = await fetchMetaGameData();
+    const saved = getSavedVersions();
+    
+    if (current) {
+        if (!saved.live) saved.live = current.live;
+        if (!saved.dev) saved.dev = current.dev;
+        saveVersions(saved.live, saved.dev);
+        
+        try { client.user.setActivity(`AC Live: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
+        await sendStartupEmbed(saved.live, saved.dev);
+    }
 
     nextCheckTime = Date.now() + CHECK_INTERVAL * 1000;
     loopTimeout = setTimeout(runTrackerLoop, CHECK_INTERVAL * 1000);
-    startCountdown();
 });
 
 if (TOKEN) {
     client.login(TOKEN);
 } else {
-    console.error("CRITICAL ERROR: Discord Token missing. Provide environment configuration variable 'DISCORD_TOKEN'.");
+    console.error("CRITICAL SETUP EXCEPTION: Environment configuration string variable 'DISCORD_TOKEN' absent.");
 }
