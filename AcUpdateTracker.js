@@ -9,8 +9,8 @@ const CLIENT_ID = process.env.CLIENT_ID || '';
 const GUILD_ID = process.env.GUILD_ID || '';
 const META_CHANNEL_ID = process.env.META_CHANNEL_ID || '';
 const LINK_CHANNEL_ID = process.env.LINK_CHANNEL_ID || '';
-const OWNER_USER_IDS = (process.env.OWNER_USER_IDS || '1012186051105804289').split(','); 
-const UPDATE_ROLE_ID = process.env.UPDATE_ROLE_ID || '1463264519953580218'; 
+const OWNER_USER_IDS = (process.env.OWNER_USER_IDS || '1012186051105804289').split(',');
+const UPDATE_ROLE_ID = process.env.UPDATE_ROLE_ID || '1463264519953580218';
 
 const BOT_NAME = 'tack';
 
@@ -20,9 +20,14 @@ const ACCESS_TOKEN = 'OC|752908224809889|';
 const APP_ID = '7190422614401072';
 const DOC_ID = '6771539532935162';
 
-const META_VERSION_FILE = './lastMetaVersion.json'; 
+const META_VERSION_FILE = './lastMetaVersion.json';
 const LOG_FILE = './LastLog.txt';
 const LINKED_USERS_FILE = './linkedUsers.txt';
+const BUNDLE_FILE = './lastBundles.json';
+
+// Bundle alert config
+const BUNDLE_CHANNEL_ID = '1503559801781751858';
+const BUNDLE_ROLE_ID = '1512214623926091968';
 
 let CHECK_INTERVAL = 60; // In seconds
 let nextCheckTime = null;
@@ -41,7 +46,7 @@ function log(text, color = 'white') {
     const timestamp = new Date().toLocaleString();
     const msg = `[${timestamp}] ${text}`;
     writeToLogFile(msg);
-    switch(color) {
+    switch (color) {
         case 'red': origLog(chalk.red(msg)); break;
         case 'green': origLog(chalk.green(msg)); break;
         case 'blue': origLog(chalk.blue(msg)); break;
@@ -100,17 +105,41 @@ async function fetchMetaGameData() {
 
         const data = response.data;
         const node = data?.data?.node;
-        
+
         const liveNodes = node?.liveChannel?.nodes || [];
         const liveVersion = liveNodes[0]?.latest_supported_binary?.version || null;
 
         const devNodes = node?.primary_binaries?.nodes || [];
         const devVersion = devNodes[0]?.version || null;
 
+        // Bundle parsing (best-effort based on store_listings structure)
+        let bundles = [];
+        try {
+            const storeListing =
+                node?.store_listings?.nodes?.[0] ||
+                node?.store_listings?.edges?.[0]?.node ||
+                null;
+
+            const bundleNodes = storeListing?.bundles?.nodes ||
+                storeListing?.bundles?.edges?.map(e => e.node) ||
+                [];
+
+            bundles = bundleNodes.map(b => ({
+                id: b.id || null,
+                name: b.name || 'Unknown Bundle',
+                banner: b.hero_image?.uri || b.hero_image?.url || null,
+                icon: b.cover_square_image?.uri || b.cover_square_image?.url || null,
+                price: b.price?.formatted_amount || b.price?.amount_with_offset || null,
+                release: b.release_date || b.release_time || 'Unknown'
+            })).filter(b => b.id);
+        } catch (e) {
+            log(`Bundle parsing error: ${e.message}`, 'orange');
+        }
+
         const assets = await fetchStoreAssets();
 
-        log(`API Fetch -> Live: ${liveVersion} | Dev: ${devVersion}`, 'green');
-        return { live: liveVersion, dev: devVersion, icon: assets.icon, banner: assets.banner };
+        log(`API Fetch -> Live: ${liveVersion} | Dev: ${devVersion} | Bundles: ${bundles.length}`, 'green');
+        return { live: liveVersion, dev: devVersion, icon: assets.icon, banner: assets.banner, bundles };
     } catch (err) {
         log(`Error calling Oculus GraphQL API: ${err.message}`, 'red');
         return null;
@@ -155,6 +184,21 @@ async function removeLinkedUser(userId) {
     return false;
 }
 
+// --- Bundle Cache Helpers ---
+function getSavedBundles() {
+    if (!fs.existsSync(BUNDLE_FILE)) return [];
+    try {
+        const parsed = JSON.parse(fs.readFileSync(BUNDLE_FILE, 'utf8'));
+        return parsed.bundles || [];
+    } catch {
+        return [];
+    }
+}
+
+function saveBundles(list) {
+    fs.writeFileSync(BUNDLE_FILE, JSON.stringify({ bundles: list }, null, 2), 'utf8');
+}
+
 // --- Notification Dispatches ---
 async function notifyLinkedUsers(current, previous, branchName, assets) {
     const users = getLinkedUsers();
@@ -163,7 +207,7 @@ async function notifyLinkedUsers(current, previous, branchName, assets) {
     const now = Math.floor(Date.now() / 1000);
     const embed = new EmbedBuilder()
         .setTitle(`Update Detected!`)
-        .setColor(0x00FF00) 
+        .setColor(0x00FF00)
         .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)\n**Wooster Games, Animal Company**`)
         .addFields(
             { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: false },
@@ -190,46 +234,74 @@ async function sendMetaUpdateEmbed(current, previous, branchName, assets) {
     try {
         const now = Math.floor(Date.now() / 1000);
         const isLive = branchName === 'Live';
-        
+
         const embed = new EmbedBuilder();
 
         if (isLive) {
             // Live Channel Setup
             embed.setTitle('Update Detected!')
-                 .setColor(0x00FF00)
-                 .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)\n**Wooster Games, Animal Company**`)
-                 .addFields(
-                     { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: false },
-                     { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: false }
-                 );
+                .setColor(0x00FF00)
+                .setDescription(`⏳ <t:${now}:F> (<t:${now}:R>)\n**Wooster Games, Animal Company**`)
+                .addFields(
+                    { name: '🟢 | Updated Version:', value: `\`\`\`${current}\`\`\``, inline: false },
+                    { name: '🔴 | Last Logged:', value: previous ? `\`\`\`${previous}\`\`\`` : '`Unknown`', inline: false }
+                );
             if (assets?.banner) embed.setImage(assets.banner);
         } else {
-            // Developer Build Channel Setup - Matches reference mockups perfectly
+            // Developer Build Channel Setup
             embed.setTitle('New Developer Build!')
-                 .setColor(0x2B2D31)
-                 .setDescription('**Animal Company**')
-                 .addFields(
-                     { name: '\u200B', value: `\`\`\`${current}\`\`\``, inline: false }
-                 )
-                 .setFooter({ text: 'This is a developer only release' });
-            
+                .setColor(0x2B2D31)
+                .setDescription('**Animal Company**')
+                .addFields(
+                    { name: '\u200B', value: `\`\`\`${current}\`\`\``, inline: false }
+                )
+                .setFooter({ text: 'This is a developer only release' });
+
             if (assets?.icon) embed.setThumbnail(assets.icon);
         }
 
         const channel = await client.channels.fetch(META_CHANNEL_ID);
         const alertContent = isLive ? `<@&${UPDATE_ROLE_ID}>` : null;
 
-        await channel.send({ 
-            content: alertContent, 
-            embeds: [embed] 
+        await channel.send({
+            content: alertContent,
+            embeds: [embed]
         });
 
         if (isLive) {
             await notifyLinkedUsers(current, previous, branchName, assets);
         }
-        
+
         log(`Broadcasted ${branchName} update to channels.`, 'blue');
     } catch (err) { log('Error sending update embed: ' + err.message, 'red'); }
+}
+
+// --- Bundle Embed Sender ---
+async function sendBundleEmbed(bundle) {
+    try {
+        const channel = await client.channels.fetch(BUNDLE_CHANNEL_ID);
+
+        const embed = new EmbedBuilder()
+            .setTitle('New Bundle Released!')
+            .setColor(0x00A2FF)
+            .setDescription(`**${bundle.name}** is now available on the Meta Store.`)
+            .addFields(
+                { name: '💰 Price', value: bundle.price || 'Unknown', inline: true },
+                { name: '📅 Release Date', value: bundle.release || 'Unknown', inline: true }
+            );
+
+        if (bundle.banner) embed.setImage(bundle.banner);
+        if (bundle.icon) embed.setThumbnail(bundle.icon);
+
+        await channel.send({
+            content: `<@&${BUNDLE_ROLE_ID}>`,
+            embeds: [embed]
+        });
+
+        log(`Bundle alert sent: ${bundle.name}`, 'cyan');
+    } catch (err) {
+        log(`Error sending bundle embed: ${err.message}`, 'red');
+    }
 }
 
 async function sendStartupEmbed(live, dev, assets) {
@@ -259,8 +331,21 @@ async function runTrackerLoop() {
         const current = await fetchMetaGameData();
 
         if (current) {
-            let updated = false;
             const assets = { icon: current.icon, banner: current.banner };
+
+            // Bundle detection
+            const savedBundleIds = getSavedBundles(); // array of IDs
+            const currentBundleIds = (current.bundles || []).map(b => b.id);
+            const newBundles = (current.bundles || []).filter(b => !savedBundleIds.includes(b.id));
+
+            if (newBundles.length > 0) {
+                for (const bundle of newBundles) {
+                    await sendBundleEmbed(bundle);
+                }
+                saveBundles(currentBundleIds);
+            }
+
+            let updated = false;
 
             if (current.live && current.live !== saved.live) {
                 await sendMetaUpdateEmbed(current.live, saved.live, 'Live', assets);
@@ -276,7 +361,7 @@ async function runTrackerLoop() {
 
             if (updated) {
                 saveVersions(saved.live, saved.dev);
-                try { client.user.setActivity(`Animal Company: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
+                try { client.user.setActivity(`Animal Company: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch { }
             }
         }
     } catch (err) { log(`Error inside core interval process loop: ${err.message}`, 'red'); }
@@ -291,10 +376,19 @@ const commands = [
     { name: 'checkupdate', description: 'Instantly polls Oculus GraphQL data logs' },
     { name: 'log', description: 'Outputs the system text diagnostics logs' },
     { name: 'uptime', description: 'Returns active bot runtime statistics' },
-    { name: 'settimer', description: 'Alters interval delay check value (seconds)', options: [{ name: 'seconds', type: ApplicationCommandOptionType.Integer, description: 'Seconds for loop execution', required: true }] }, 
+    {
+        name: 'settimer',
+        description: 'Alters interval delay check value (seconds)',
+        options: [{ name: 'seconds', type: ApplicationCommandOptionType.Integer, description: 'Seconds for loop execution', required: true }]
+    },
     { name: 'link', description: 'Subscribe to Animal Company branch update logs' },
     { name: 'unlink', description: 'Stop receiving branch push alerts' },
-    { name: 'message', description: 'Admin communication blast to subscribers', options: [{ name: 'text', type: ApplicationCommandOptionType.String, description: 'Text description body', required: true }] }
+    {
+        name: 'message',
+        description: 'Admin communication blast to subscribers',
+        options: [{ name: 'text', type: ApplicationCommandOptionType.String, description: 'Text description body', required: true }]
+    },
+    { name: 'testbundlemessage', description: 'Sends a mock bundle alert embed for testing' }
 ];
 
 client.on('interactionCreate', async interaction => {
@@ -309,7 +403,7 @@ client.on('interactionCreate', async interaction => {
         const added = await addLinkedUser(user.id);
         if (added) {
             await interaction.reply({ content: 'Linked successfully! Check your DMs.', flags: [MessageFlags.Ephemeral] });
-            try { await user.send(`Hey <@${user.id}>! You've successfully locked in subscription alerts for Animal Company.`); } catch {}
+            try { await user.send(`Hey <@${user.id}>! You've successfully locked in subscription alerts for Animal Company.`); } catch { }
         } else {
             await interaction.reply({ content: 'Account already configured into database tracking lists.', flags: [MessageFlags.Ephemeral] });
         }
@@ -337,10 +431,10 @@ client.on('interactionCreate', async interaction => {
         const assets = { icon: current?.icon, banner: current?.banner };
 
         log(`Dispatched forced /test layout render for user profile ${user.tag}`, 'orange');
-        
+
         await sendMetaUpdateEmbed(saved.live || '1.76.1.3001', '1.75.0.2900', 'Live', assets);
         await sendMetaUpdateEmbed(saved.dev || '1.76.1.3001', '1.76.1.3001', 'Developer Builds', assets);
-        
+
         await interaction.editReply('✅ Double-mock branch test dispatches generated completely into channel directories.');
     }
 
@@ -420,11 +514,30 @@ client.on('interactionCreate', async interaction => {
         }
         await interaction.followUp({ content: `Broadcast complete. Sent: ${successCount} | Failed: ${failCount}`, flags: [MessageFlags.Ephemeral] });
     }
+
+    if (commandName === 'testbundlemessage') {
+        await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+        const mockBundle = {
+            id: 'test_bundle_001',
+            name: 'Animal Company: Starter Pack',
+            price: '$9.99',
+            release: '2026-01-01',
+            banner: 'https://i.imgur.com/3ZQ3ZQx.png',
+            icon: 'https://i.imgur.com/8QfQ8Qf.png'
+        };
+
+        log(`Dispatched /testbundlemessage by ${user.tag}`, 'orange');
+
+        await sendBundleEmbed(mockBundle);
+
+        await interaction.editReply('✅ Mock bundle alert sent successfully.');
+    }
 });
 
 client.once('clientReady', async () => {
     log(`${BOT_NAME} logged in as ${client.user.tag}`, 'cyan');
-    
+
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
         await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
@@ -433,15 +546,23 @@ client.once('clientReady', async () => {
 
     const current = await fetchMetaGameData();
     const saved = getSavedVersions();
-    
+
     if (current) {
         if (!saved.live) saved.live = current.live;
         if (!saved.dev) saved.dev = current.dev;
         saveVersions(saved.live, saved.dev);
-        
+
         const assets = { icon: current.icon, banner: current.banner };
-        try { client.user.setActivity(`Animal Company: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch {}
+        try { client.user.setActivity(`Animal Company: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch { }
         await sendStartupEmbed(saved.live, saved.dev, assets);
+
+        // Initialize bundle cache on startup if empty
+        const existingBundleIds = getSavedBundles();
+        if (existingBundleIds.length === 0 && (current.bundles || []).length > 0) {
+            const ids = current.bundles.map(b => b.id);
+            saveBundles(ids);
+            log(`Initialized bundle cache with ${ids.length} entries.`, 'blue');
+        }
     }
 
     nextCheckTime = Date.now() + CHECK_INTERVAL * 1000;
