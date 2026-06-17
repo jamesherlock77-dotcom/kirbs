@@ -3,14 +3,21 @@ import json
 import os
 from typing import Optional
 
+
 import aiohttp
+import discord
+from discord.ext import commands, tasks
 
 
-ACCESS_TOKEN = os.environ.get("OCULUS_ACCESS_TOKEN", "OC|752908224809889|")
-APP_ID = int(os.environ.get("OCULUS_APP_ID", "7190422614401072"))
-DOCID = int(os.environ.get("OCULUS_DOC_ID", "6771539532935162"))
+# ── Config ────────────────────────────────────────────────────────────────────
+ACCESS_TOKEN = "OC|752908224809889|"
+APP_ID       = 7190422614401072
+DOCID        = 6771539532935162
+CHANNEL_ID   = 1503559649259950190
+ROLE_MENTION = "<@&1511530779576893561>"  # pinged on live updates only
 
 
+# ── GraphQL client ────────────────────────────────────────────────────────────
 class GraphQLClient:
     def __init__(
         self,
@@ -31,12 +38,10 @@ class GraphQLClient:
             loop = asyncio.get_running_loop()
             now = loop.time()
             self._timestamps = [t for t in self._timestamps if now - t < self.per_seconds]
-
             if len(self._timestamps) >= self.max_requests:
                 delay = self.per_seconds - (now - self._timestamps[0])
                 if delay > 0:
                     await asyncio.sleep(delay)
-
             self._timestamps.append(asyncio.get_running_loop().time())
 
     def _get_session(self) -> aiohttp.ClientSession:
@@ -46,39 +51,26 @@ class GraphQLClient:
 
     async def post(self, payload: dict) -> Optional[dict]:
         await self._acquire_slot()
-        session = self._get_session()
-
         try:
-            async with session.post(self.url, data=payload) as resp:
+            async with self._get_session().post(self.url, data=payload) as resp:
                 resp.raise_for_status()
                 return await resp.json(content_type=None)
         except aiohttp.ClientConnectionError as e:
-            print(f"GraphQL connection error: {type(e).__name__}: {e}")
+            print(f"[GraphQL] Connection error: {e}")
             await self.close()
-            return None
         except aiohttp.ClientResponseError as e:
-            print(f"GraphQL response error: {e.status} {e.message}")
-            return None
+            print(f"[GraphQL] Response error: {e.status} {e.message}")
         except Exception as e:
-            print(f"GraphQL error: {type(e).__name__}: {e}")
-            return None
+            print(f"[GraphQL] Unexpected error: {type(e).__name__}: {e}")
+        return None
 
     async def close(self) -> None:
         if self._session and not self._session.closed:
             await self._session.close()
         self._session = None
 
-    async def __aenter__(self) -> "GraphQLClient":
-        return self
 
-    async def __aexit__(self, *_) -> None:
-        await self.close()
-
-
-# Module-level client — no dependency on an external `bot` object
-_client = GraphQLClient()
-
-
+# ── Oculus helpers ────────────────────────────────────────────────────────────
 def _payload() -> dict:
     return {
         "access_token": ACCESS_TOKEN,
@@ -87,56 +79,103 @@ def _payload() -> dict:
     }
 
 
-async def fetch_store_metadata() -> Optional[dict]:
-    data = await _client.post(_payload())
+async def fetch_store_metadata(client: GraphQLClient) -> Optional[dict]:
+    data = await client.post(_payload())
     return data if isinstance(data, dict) else None
 
 
-async def get_live_version(meta: Optional[dict] = None) -> Optional[str]:
-    if meta is None:
-        meta = await fetch_store_metadata()
-
-    if not isinstance(meta, dict):
-        return None
-
+def get_live_version(meta: dict) -> Optional[str]:
     nodes = (
         meta.get("data", {})
         .get("node", {})
         .get("liveChannel", {})
         .get("nodes", [])
     )
-    if not nodes:
-        return None
-
-    return nodes[0].get("latest_supported_binary", {}).get("version")
+    return nodes[0].get("latest_supported_binary", {}).get("version") if nodes else None
 
 
-async def get_dev_version(meta: Optional[dict] = None) -> Optional[str]:
-    if meta is None:
-        meta = await fetch_store_metadata()
-
-    if not isinstance(meta, dict):
-        return None
-
+def get_dev_version(meta: dict) -> Optional[str]:
     nodes = (
         meta.get("data", {})
         .get("node", {})
         .get("primary_binaries", {})
         .get("nodes", [])
     )
-    if not nodes:
-        return None
-
-    return nodes[0].get("version")
+    return nodes[0].get("version") if nodes else None
 
 
-async def run() -> None:
-    async with _client:
-        meta = await fetch_store_metadata()
-        live = await get_live_version(meta)
-        dev = await get_dev_version(meta)
-        print(f"Live: {live}\nDev:  {dev}")
+# ── Bot ───────────────────────────────────────────────────────────────────────
+class VersionBot(commands.Bot):
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        super().__init__(command_prefix="!", intents=intents)
+        self.graphql_client = GraphQLClient()
+        self._last_live: Optional[str] = None
+        self._last_dev: Optional[str] = None
+
+    async def setup_hook(self) -> None:
+        self.version_poller.start()
+
+    async def close(self) -> None:
+        self.version_poller.cancel()
+        await self.graphql_client.close()
+        await super().close()
+
+    async def on_ready(self) -> None:
+        print(f"[Bot] Logged in as {self.user} (id: {self.user.id})")
+
+    @tasks.loop(minutes=5)
+    async def version_poller(self) -> None:
+        meta = await fetch_store_metadata(self.graphql_client)
+        if meta is None:
+            print("[Poller] Failed to fetch metadata, skipping.")
+            return
+
+        live = get_live_version(meta)
+        dev  = get_dev_version(meta)
+
+        # First run — seed state silently, no notifications
+        if self._last_live is None and self._last_dev is None:
+            self._last_live = live
+            self._last_dev  = dev
+            print(f"[Poller] Initial state seeded — Live: {live} | Dev: {dev}")
+            return
+
+        print(f"[Poller] Checked — Live: {live} | Dev: {dev}")
+
+        channel = self.get_channel(CHANNEL_ID)
+        if channel is None:
+            print(f"[Poller] Channel {CHANNEL_ID} not found.")
+            return
+
+        # Live update — ping the role
+        if live != self._last_live:
+            embed = discord.Embed(
+                title="🟢 Live Version Updated",
+                color=discord.Color.green(),
+            )
+            embed.add_field(name="Previous", value=self._last_live or "unknown", inline=True)
+            embed.add_field(name="New",      value=live or "unknown",            inline=True)
+            await channel.send(content=ROLE_MENTION, embed=embed)
+            self._last_live = live
+
+        # Dev update — no ping
+        if dev != self._last_dev:
+            embed = discord.Embed(
+                title="🔧 Dev Version Updated",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="Previous", value=self._last_dev or "unknown", inline=True)
+            embed.add_field(name="New",      value=dev or "unknown",            inline=True)
+            await channel.send(embed=embed)
+            self._last_dev = dev
+
+    @version_poller.before_loop
+    async def before_poller(self) -> None:
+        await self.wait_until_ready()
 
 
+# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    asyncio.run(run())
+    bot = VersionBot()
+    bot.run(os.environ["DISCORD_TOKEN"])
