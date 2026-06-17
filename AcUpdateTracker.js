@@ -34,7 +34,7 @@ const RAW_DUMP_FILE     = `${DATA_DIR}/rawApiDump.json`;
 const BUNDLE_CHANNEL_ID = '1503559801781751858';
 const BUNDLE_ROLE_ID    = '1512214623926091968';
  
-let CHECK_INTERVAL = 60; // In seconds
+let CHECK_INTERVAL = 60;
 let nextCheckTime = null;
 let loopTimeout = null;
  
@@ -117,7 +117,6 @@ async function fetchMetaGameData() {
         const devNodes = node?.primary_binaries?.nodes || [];
         const devVersion = devNodes[0]?.version || null;
  
-        // Bundle parsing (best-effort based on store_listings structure)
         let bundles = [];
         try {
             const storeListing =
@@ -147,6 +146,10 @@ async function fetchMetaGameData() {
         return { live: liveVersion, dev: devVersion, icon: assets.icon, banner: assets.banner, bundles };
     } catch (err) {
         log(`Error calling Oculus GraphQL API: ${err.message}`, 'red');
+        if (err.response) {
+            log(`Status: ${err.response.status}`, 'red');
+            log(`Response body: ${JSON.stringify(err.response.data)}`, 'red');
+        }
         return null;
     }
 }
@@ -169,6 +172,10 @@ async function fetchRawApiDump() {
         return true;
     } catch (err) {
         log(`Raw API dump failed: ${err.message}`, 'red');
+        if (err.response) {
+            log(`Dump error status: ${err.response.status}`, 'red');
+            log(`Dump error body: ${JSON.stringify(err.response.data)}`, 'red');
+        }
         return false;
     }
 }
@@ -346,7 +353,6 @@ async function runTrackerLoop() {
         if (current) {
             const assets = { icon: current.icon, banner: current.banner };
  
-            // Bundle detection
             const savedBundleIds = getSavedBundleIds();
             const currentBundleIds = (current.bundles || []).map(b => b.id);
             const newBundles = (current.bundles || []).filter(b => !savedBundleIds.includes(b.id));
@@ -583,7 +589,6 @@ client.once('ready', async () => {
         try { client.user.setActivity(`Animal Company: ${saved.live || '?'}`, { type: ActivityType.Watching }); } catch { }
         await sendStartupEmbed(saved.live, saved.dev, assets);
  
-        // Initialize bundle cache on startup if empty
         const existingBundleIds = getSavedBundleIds();
         if (existingBundleIds.length === 0 && (current.bundles || []).length > 0) {
             const ids = current.bundles.map(b => b.id);
