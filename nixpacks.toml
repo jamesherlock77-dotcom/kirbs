@@ -1,8 +1,5 @@
 [phases.setup]
 nixPkgs = ["python312"]
 
-[phases.install]
-cmds = ["pip install discord.py aiohttp"]
-
 [start]
 cmd = "python main.py"
