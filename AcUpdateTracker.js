@@ -16,7 +16,7 @@ const BOT_NAME = 'tack';
  
 // Meta Oculus GraphQL API Constants
 const GRAPHQL_URL = 'https://graph.oculus.com/graphql';
-const ACCESS_TOKEN = 'OC|752908224809889|';
+const ACCESS_TOKEN = 'OC|9942899672464615|';
 const APP_ID = '7190422614401072';
 const DOC_ID = '6771539532935162';
  
