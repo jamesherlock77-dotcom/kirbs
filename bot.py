@@ -62,9 +62,6 @@ async def profile(interaction: discord.Interaction, user: discord.User = None):
         if roles:
             embed.add_field(name="Roles", value=" ".join(roles), inline=False)
 
-    if fetched.banner:
-        embed.set_image(url=fetched.banner.url)
-
     await interaction.response.send_message(embed=embed)
 
 
