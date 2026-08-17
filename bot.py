@@ -1,4 +1,6 @@
 import os
+
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -8,16 +10,29 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
-intents.members = True  # lets us pull server-specific info (join date, roles)
+intents.members = True          # join date, roles, join/leave tracking
+intents.message_content = True  # needed to see content in message edit/delete logs
+intents.invites = True          # invite create/delete events
 
 
 class ProfileBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
+        self.session: aiohttp.ClientSession | None = None
 
     async def setup_hook(self):
+        self.session = aiohttp.ClientSession()
+
+        await self.load_extension("cogs.mod_log")
+        await self.load_extension("cogs.join_leave")
+
         # Syncs slash commands with Discord on startup
         await self.tree.sync()
+
+    async def close(self):
+        if self.session:
+            await self.session.close()
+        await super().close()
 
 
 bot = ProfileBot()
@@ -34,7 +49,6 @@ async def profile(interaction: discord.Interaction, user: discord.User = None):
     target = user or interaction.user
     # fetch_user hits the API directly, which is required to get banner data
     fetched = await bot.fetch_user(target.id)
-
     embed = discord.Embed(
         title=f"{fetched.name}'s Profile",
         color=discord.Color.blurple(),
@@ -47,7 +61,6 @@ async def profile(interaction: discord.Interaction, user: discord.User = None):
         value=discord.utils.format_dt(fetched.created_at, style="F"),
         inline=False,
     )
-
     # If the command was run in a server and the target is a member there,
     # add server-specific info too
     member = interaction.guild.get_member(target.id) if interaction.guild else None
@@ -61,7 +74,6 @@ async def profile(interaction: discord.Interaction, user: discord.User = None):
         roles = [role.mention for role in member.roles if role.name != "@everyone"]
         if roles:
             embed.add_field(name="Roles", value=" ".join(roles), inline=False)
-
     await interaction.response.send_message(embed=embed)
 
 
@@ -70,13 +82,11 @@ async def profile(interaction: discord.Interaction, user: discord.User = None):
 async def banner(interaction: discord.Interaction, user: discord.User = None):
     target = user or interaction.user
     fetched = await bot.fetch_user(target.id)
-
     if not fetched.banner:
         await interaction.response.send_message(
             f"{fetched.name} doesn't have a banner set.", ephemeral=True
         )
         return
-
     embed = discord.Embed(title=f"{fetched.name}'s Banner", color=discord.Color.blurple())
     embed.set_image(url=fetched.banner.url)
     await interaction.response.send_message(embed=embed)
